@@ -26,7 +26,12 @@ HOLIDAYS = {date(YEAR, 1, d) for d in range(1, 9)} | {
     date(YEAR, 2, 23), date(YEAR, 3, 8), date(YEAR, 5, 1),
     date(YEAR, 5, 9), date(YEAR, 6, 12), date(YEAR, 11, 4),
 }
-JANUARY_DATES = {f"2027-01-{d:02}" for d in range(1, 9)}
+NEW_YEAR_WORK_START = date(2026, 12, 31)
+NEW_YEAR_WORK_END = date(2027, 1, 10)
+NEW_YEAR_WORK_DATES = {
+    (NEW_YEAR_WORK_START + timedelta(days=offset)).isoformat()
+    for offset in range((NEW_YEAR_WORK_END - NEW_YEAR_WORK_START).days + 1)
+}
 
 
 def normalize_name(value):
@@ -278,8 +283,8 @@ def create_app(config=None):
         if not isinstance(holiday, dict) or holiday.get("choice") not in ("undecided", "not_working", "selected_dates"):
             raise ValueError("Выберите ответ о работе в новогодние праздники.")
         dates = holiday.get("dates", [])
-        if not isinstance(dates, list) or any(not isinstance(d, str) or d not in JANUARY_DATES for d in dates):
-            raise ValueError("Для работы в праздники выберите даты с 1 по 8 января 2027 года.")
+        if not isinstance(dates, list) or any(not isinstance(d, str) or d not in NEW_YEAR_WORK_DATES for d in dates):
+            raise ValueError("Для работы в праздники выберите даты с 31 декабря 2026 по 10 января 2027 года.")
         if holiday["choice"] == "selected_dates" and not dates:
             raise ValueError("Выберите хотя бы один день работы в праздники.")
         if holiday["choice"] != "selected_dates":
@@ -461,13 +466,24 @@ def create_app(config=None):
         seed = database.parent / "initial-roster.json"
         if not seed.exists():
             seed = Path(__file__).parent / "private" / "initial-roster.json"
-        if app.config["SEED_ROSTER"] and seed.exists() and db.execute("SELECT count(*) FROM employees").fetchone()[0] == 0:
+        if app.config["SEED_ROSTER"] and seed.exists():
             result = json.loads(seed.read_text(encoding="utf-8-sig"))
-            for employee in result["matched"]:
-                name = employee["full_name"]
-                surname = employee["surname"]
-                db.execute("INSERT OR IGNORE INTO employees(full_name,full_name_key,surname,surname_key) VALUES (?,?,?,?)", (name, normalize_name(name), surname, normalize_name(surname)))
-            db.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES ('initial_import_report',?)", (json.dumps(result, ensure_ascii=False),))
+            version = result.get("version")
+            version = version if isinstance(version, str) and version else None
+            previous = db.execute("SELECT value FROM metadata WHERE key='roster_version'").fetchone()
+            empty = db.execute("SELECT count(*) FROM employees").fetchone()[0] == 0
+            if empty or (version and (previous is None or previous["value"] != version)):
+                # A versioned roster update adds people once, retaining saved plans,
+                # HR edits and IDs. An unversioned custom seed keeps its old behavior.
+                # Explicit additions also preserve names HR changed before upgrading.
+                employees = result["matched"] if empty else result.get("additions", result["matched"])
+                for employee in employees:
+                    name = employee["full_name"]
+                    surname = employee["surname"]
+                    db.execute("INSERT OR IGNORE INTO employees(full_name,full_name_key,surname,surname_key) VALUES (?,?,?,?)", (name, normalize_name(name), surname, normalize_name(surname)))
+                db.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES ('initial_import_report',?)", (json.dumps(result, ensure_ascii=False),))
+                if version:
+                    db.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES ('roster_version',?)", (version,))
         db.commit()
     return app
 

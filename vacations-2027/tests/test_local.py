@@ -1,5 +1,6 @@
 """Local launcher integration checks; all saved data is confined to tmp_path."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,12 @@ import pytest
 from app import get_db
 import run_local
 from run_local import create_local_app
+
+
+@pytest.fixture
+def bundled_roster_size():
+    source = Path(run_local.__file__).parent / "private" / "initial-roster.json"
+    return len(json.loads(source.read_text(encoding="utf-8-sig"))["matched"])
 
 
 @pytest.fixture(autouse=True)
@@ -35,14 +42,14 @@ def login_admin(client):
     assert response.status_code == 200
 
 
-def test_first_local_launch_creates_selected_roster_in_external_data_directory(tmp_path):
+def test_first_local_launch_creates_selected_roster_in_external_data_directory(tmp_path, bundled_roster_size):
     data_dir = tmp_path / "user-data" / "vacations"
     application = create_local_app(data_dir)
     assert Path(application.config["DATABASE"]).resolve() == data_dir / "vacations.sqlite3"
     assert (data_dir / "vacations.sqlite3").is_file()
     with application.app_context():
         employees = get_db().execute("SELECT surname,full_name FROM employees").fetchall()
-    assert len(employees) == 30
+    assert len(employees) == bundled_roster_size
     assert [row["full_name"] for row in employees if row["surname"] == "Николаенко"] == [
         "Николаенко Оксана Владимировна"
     ]
@@ -53,7 +60,7 @@ def test_first_local_launch_creates_selected_roster_in_external_data_directory(t
     assert login_employee(application.test_client())["full_name"] == "Николаенко Оксана Владимировна"
 
 
-def test_local_http_login_uses_local_defaults_despite_cloud_environment(tmp_path, monkeypatch):
+def test_local_http_login_uses_local_defaults_despite_cloud_environment(tmp_path, monkeypatch, bundled_roster_size):
     cloud_data = tmp_path / "cloud-data"
     monkeypatch.setenv("DATA_DIR", str(cloud_data))
     monkeypatch.setenv("COOKIE_SECURE", "1")
@@ -69,11 +76,11 @@ def test_local_http_login_uses_local_defaults_despite_cloud_environment(tmp_path
     assert "Secure" not in cookie
     assert "HttpOnly" in cookie
     login_admin(client)
-    assert client.get("/api/admin/dashboard").get_json()["stats"]["total"] == 30
+    assert client.get("/api/admin/dashboard").get_json()["stats"]["total"] == bundled_roster_size
     assert not (cloud_data / "vacations.sqlite3").exists()
 
 
-def test_saved_plan_hr_changes_and_session_key_survive_local_restart(tmp_path):
+def test_saved_plan_hr_changes_and_session_key_survive_local_restart(tmp_path, bundled_roster_size):
     data_dir = tmp_path / "local-data"
     first_app = create_local_app(data_dir)
     first_client = first_app.test_client()
@@ -116,7 +123,141 @@ def test_saved_plan_hr_changes_and_session_key_survive_local_restart(tmp_path):
     assert stored["employee"]["allowance_days"] == 35
     login_admin(second_app.test_client())
     with second_app.app_context():
-        assert get_db().execute("SELECT count(*) FROM employees").fetchone()[0] == 31
+        assert get_db().execute("SELECT count(*) FROM employees").fetchone()[0] == bundled_roster_size + 1
+
+
+def test_versioned_roster_update_adds_people_once_and_preserves_hr_data_and_plans(tmp_path):
+    data_dir = tmp_path / "local-data"
+    data_dir.mkdir()
+    seed = data_dir / "initial-roster.json"
+    existing_person = {"surname": "Иванов", "full_name": "Иванов Иван Иванович"}
+    added_doctor = {"surname": "Докторов", "full_name": "Докторов Пётр Сергеевич"}
+    seed.write_text(
+        json.dumps({"version": "roster-v1", "matched": [existing_person]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    first_app = create_local_app(data_dir)
+    employee_client = first_app.test_client()
+    employee = login_employee(employee_client, surname="Иванов")
+    payload = {
+        "periods": [{"start": "2027-07-05", "end": "2027-07-18"}],
+        "holiday": {"choice": "selected_dates", "dates": ["2026-12-31", "2027-01-10"], "comment": "Ночная смена"},
+        "submitted": True,
+    }
+    assert employee_client.put("/api/employee/plan", json=payload, headers=csrf(employee_client)).status_code == 200
+    hr = first_app.test_client()
+    login_admin(hr)
+    assert hr.patch(
+        f"/api/admin/employees/{employee['id']}", json={"allowance_days": 35}, headers=csrf(hr)
+    ).status_code == 200
+    extra = hr.post(
+        "/api/admin/employees", json={"full_name": "Ручной Андрей Олегович"}, headers=csrf(hr)
+    )
+    assert extra.status_code == 201
+    with first_app.app_context():
+        extra_id = get_db().execute(
+            "SELECT id FROM employees WHERE full_name = ?", ("Ручной Андрей Олегович",)
+        ).fetchone()[0]
+    key = (data_dir / ".session-key").read_bytes()
+    seed.write_text(
+        json.dumps({"version": "roster-v2", "matched": [existing_person, added_doctor]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    updated_app = create_local_app(data_dir)
+    updated_client = updated_app.test_client()
+    preserved = login_employee(updated_client, surname="Иванов")
+    assert preserved["id"] == employee["id"]
+    assert preserved["allowance_days"] == 35
+    assert preserved["full_name"] == existing_person["full_name"]
+    saved_plan = updated_client.get("/api/employee/plan").get_json()["plan"]
+    for field, value in payload.items():
+        assert saved_plan[field] == value
+    assert login_employee(updated_app.test_client(), surname="Докторов")["full_name"] == added_doctor["full_name"]
+    assert login_employee(updated_app.test_client(), surname="Ручной")["id"] == extra_id
+    assert (data_dir / ".session-key").read_bytes() == key
+    with updated_app.app_context():
+        assert get_db().execute("SELECT value FROM metadata WHERE key='roster_version'").fetchone()[0] == "roster-v2"
+        assert get_db().execute("SELECT count(*) FROM employees").fetchone()[0] == 3
+
+    # Once this seed version is applied, an HR correction must not re-add the old name.
+    updated_hr = updated_app.test_client()
+    login_admin(updated_hr)
+    assert updated_hr.patch(
+        f"/api/admin/employees/{employee['id']}",
+        json={"full_name": "Исправленный Иван Иванович"}, headers=csrf(updated_hr),
+    ).status_code == 200
+    for _ in range(2):
+        restarted_app = create_local_app(data_dir)
+        corrected = restarted_app.test_client()
+        assert login_employee(corrected, surname="Исправленный")["id"] == employee["id"]
+        assert corrected.get("/api/employee/plan").get_json()["plan"]["holiday"] == payload["holiday"]
+        with restarted_app.app_context():
+            assert get_db().execute("SELECT count(*) FROM employees").fetchone()[0] == 3
+            assert get_db().execute("SELECT count(*) FROM employees WHERE surname='Иванов'").fetchone()[0] == 0
+
+
+def test_versioned_roster_updates_existing_unversioned_database_without_reset(tmp_path):
+    data_dir = tmp_path / "local-data"
+    data_dir.mkdir()
+    seed = data_dir / "initial-roster.json"
+    initial = {"surname": "Иванов", "full_name": "Иванов Иван Иванович"}
+    seed.write_text(json.dumps({"matched": [initial]}, ensure_ascii=False), encoding="utf-8")
+    old_app = create_local_app(data_dir)
+    old_id = login_employee(old_app.test_client(), surname="Иванов")["id"]
+    seed.write_text(
+        json.dumps({"version": "new-version", "matched": [initial, {"surname": "Докторов", "full_name": "Докторов Пётр Сергеевич"}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    updated = create_local_app(data_dir)
+    assert login_employee(updated.test_client(), surname="Иванов")["id"] == old_id
+    assert login_employee(updated.test_client(), surname="Докторов")["full_name"] == "Докторов Пётр Сергеевич"
+    with updated.app_context():
+        assert get_db().execute("SELECT count(*) FROM employees").fetchone()[0] == 2
+
+
+def test_unversioned_roster_does_not_update_an_existing_database(tmp_path):
+    data_dir = tmp_path / "local-data"
+    data_dir.mkdir()
+    seed = data_dir / "initial-roster.json"
+    initial = {"surname": "Иванов", "full_name": "Иванов Иван Иванович"}
+    seed.write_text(json.dumps({"matched": [initial]}, ensure_ascii=False), encoding="utf-8")
+    first = create_local_app(data_dir)
+    employee_id = login_employee(first.test_client(), surname="Иванов")["id"]
+    seed.write_text(
+        json.dumps({"matched": [initial, {"surname": "Докторов", "full_name": "Докторов Пётр Сергеевич"}]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    restarted = create_local_app(data_dir)
+    assert login_employee(restarted.test_client(), surname="Иванов")["id"] == employee_id
+    with restarted.app_context():
+        assert get_db().execute("SELECT count(*) FROM employees").fetchone()[0] == 1
+
+
+def test_explicit_roster_additions_preserve_hr_name_corrections_from_before_upgrade(tmp_path):
+    data_dir = tmp_path / "local-data"
+    data_dir.mkdir()
+    seed = data_dir / "initial-roster.json"
+    original = {"surname": "Иванов", "full_name": "Иванов Иван Иванович"}
+    seed.write_text(json.dumps({"matched": [original]}, ensure_ascii=False), encoding="utf-8")
+    old_app = create_local_app(data_dir)
+    employee_id = login_employee(old_app.test_client(), surname="Иванов")["id"]
+    hr = old_app.test_client()
+    login_admin(hr)
+    corrected_name = "Исправленный Иван Иванович"
+    assert hr.patch(
+        f"/api/admin/employees/{employee_id}", json={"full_name": corrected_name}, headers=csrf(hr)
+    ).status_code == 200
+    doctor = {"surname": "Докторов", "full_name": "Докторов Пётр Сергеевич"}
+    seed.write_text(
+        json.dumps({"version": "doctors-v2", "matched": [original, doctor], "additions": [doctor]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    upgraded = create_local_app(data_dir)
+    assert login_employee(upgraded.test_client(), surname="Исправленный")["id"] == employee_id
+    with upgraded.app_context():
+        names = {row[0] for row in get_db().execute("SELECT full_name FROM employees").fetchall()}
+    assert names == {corrected_name, doctor["full_name"]}
 
 
 @pytest.mark.parametrize("platform", ["win32", "darwin", "linux"])

@@ -30,7 +30,7 @@ def run(local=False):
             {"full_name": "Проверкин Иван Иванович", "surname": "Проверкин"},
             {"full_name": "Проверкин Пётр Петрович", "surname": "Проверкин"},
         ]}
-        (data_dir / "initial-roster.json").write_text(json.dumps(seed, ensure_ascii=False))
+        (data_dir / "initial-roster.json").write_text(json.dumps(seed, ensure_ascii=False), encoding="utf-8")
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
@@ -76,13 +76,18 @@ def run(local=False):
                     page.locator("#period-start-0").fill("2027-07-05")
                     page.locator("#period-end-0").fill("2027-07-18")
                     expect(page.locator("#used-days")).to_have_text("14")
+                    expect(page.locator('[data-action="holiday-date"]')).to_have_count(11)
+                    page.locator('[data-action="holiday-date"][data-date="2026-12-31"]').click()
                     page.locator('[data-action="holiday-date"][data-date="2027-01-02"]').click()
+                    page.locator('[data-action="holiday-date"][data-date="2027-01-10"]').click()
                     page.locator("#holiday-comment").fill("Могу работать утром. <b>Это текст.</b>")
                     page.locator('[data-action="save-draft"]').click()
                     expect(page.locator("#plan-badge")).to_contain_text("Черновик")
                     page.reload()
                     expect(page.locator("#period-start-0")).to_have_value("2027-07-05")
                     expect(page.locator("#holiday-comment")).to_have_value("Могу работать утром. <b>Это текст.</b>")
+                    for work_date in ('2026-12-31', '2027-01-02', '2027-01-10'):
+                        expect(page.locator(f'[data-action="holiday-date"][data-date="{work_date}"]')).to_have_attribute('aria-pressed', 'true')
                     page.locator('[data-action="submit-plan"]').click()
                     expect(page.locator("#plan-badge")).to_contain_text("Отправлено")
                     page.screenshot(path=str(OUTPUT / "employee-desktop.png"), full_page=True)
@@ -101,6 +106,8 @@ def run(local=False):
                     expect(page.locator('tr[data-action="employee-detail"]')).to_have_count(1)
                     page.locator('tr[data-action="employee-detail"]').click()
                     expect(page.locator('.modal')).to_contain_text('05.07.2027')
+                    expect(page.locator('.detail-holiday')).to_contain_text('31.12.2026')
+                    expect(page.locator('.detail-holiday')).to_contain_text('10.01.2027')
                     expect(page.locator('.detail-comment')).to_have_text('Могу работать утром. <b>Это текст.</b>')
                     assert page.locator('.detail-comment b').count() == 0, "Comment rendered as HTML"
                     page.locator('[data-action="edit-employee"]').click()
@@ -112,7 +119,7 @@ def run(local=False):
                     assert dashboard['stats'] == {'total': 3, 'submitted': 1, 'drafts': 0, 'missing': 2}
                     employee = next(e for e in dashboard['employees'] if e['surname'] == 'Тестов')
                     assert employee['allowance_days'] == 35
-                    assert employee['plan']['holiday']['dates'] == ['2027-01-02']
+                    assert employee['plan']['holiday']['dates'] == ['2026-12-31', '2027-01-02', '2027-01-10']
                     page.locator('#staff-search').fill('')
                     page.screenshot(path=str(OUTPUT / 'admin-desktop.png'), full_page=True)
                     page.locator('[data-action="view"][data-view="calendar"]').click()
@@ -130,6 +137,7 @@ def run(local=False):
                     assert page.request.get(address + '/api/admin/dashboard').json()['stats']['total'] == 4
                     export = page.request.get(address + '/api/admin/export.csv')
                     assert export.ok and 'Тестов Иван Петрович' in export.text()
+                    assert '2026-12-31' in export.text() and '2027-01-10' in export.text()
                     assert not errors, errors
                     browser.close()
                 print(('Local Waitress' if local else 'Cloud Gunicorn') + ' browser smoke passed: surname/ambiguity, draft/reload/submit, holidays, HR/detail/allowance, import/export, mobile, no console errors.')

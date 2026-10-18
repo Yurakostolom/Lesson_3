@@ -1,6 +1,7 @@
 """End-to-end API checks using a temporary database and synthetic employees."""
 
 import json
+from datetime import date, timedelta
 from io import BytesIO
 
 import pytest
@@ -208,6 +209,17 @@ def test_january_public_holidays_do_not_consume_leave_allowance(client):
     ).status_code in (400, 422)
 
 
+def test_extended_new_year_work_period_does_not_extend_statutory_leave_exclusions(client):
+    assert employee_login(client).status_code == 200
+    response = save_plan(
+        client,
+        plan([{"start": "2027-01-01", "end": "2027-01-24"}], submitted=True),
+    )
+    assert response.status_code == 200
+    assert response.get_json()["summary"]["calendar_days"] == 24
+    assert response.get_json()["summary"]["leave_days"] == 16
+
+
 @pytest.mark.parametrize(
     "start,end",
     [
@@ -231,7 +243,8 @@ def test_other_public_holidays_are_excluded_from_leave_day_count(client, start, 
     "holiday",
     [
         {"choice": "selected_dates", "dates": [], "comment": ""},
-        {"choice": "selected_dates", "dates": ["2027-01-09"], "comment": ""},
+        {"choice": "selected_dates", "dates": ["2027-01-11"], "comment": ""},
+        {"choice": "selected_dates", "dates": ["2026-12-30"], "comment": ""},
         {"choice": "selected_dates", "dates": ["2026-01-01"], "comment": ""},
         {"choice": "selected_dates", "dates": ["invalid"], "comment": ""},
         {"choice": "invalid", "dates": [], "comment": ""},
@@ -240,6 +253,32 @@ def test_other_public_holidays_are_excluded_from_leave_day_count(client, start, 
 def test_invalid_new_year_work_choices_are_rejected(client, holiday):
     assert employee_login(client).status_code == 200
     assert save_plan(client, plan(holiday=holiday)).status_code in (400, 422)
+
+
+@pytest.mark.parametrize("work_date", ["2026-12-31", "2027-01-09", "2027-01-10"])
+def test_extended_new_year_work_boundary_dates_can_be_saved(client, work_date):
+    assert employee_login(client).status_code == 200
+    holiday = {"choice": "selected_dates", "dates": [work_date], "comment": "Смена"}
+    assert save_plan(client, plan(holiday=holiday)).status_code == 200
+    assert client.get("/api/employee/plan").get_json()["plan"]["holiday"] == holiday
+
+
+def test_complete_eleven_day_new_year_work_period_round_trips_through_hr_and_csv(app, client):
+    dates = [(date(2026, 12, 31) + timedelta(days=offset)).isoformat() for offset in range(11)]
+    holiday = {"choice": "selected_dates", "dates": dates, "comment": "Все праздничные смены"}
+    assert employee_login(client).status_code == 200
+    assert save_plan(client, plan(holiday=holiday, submitted=True)).status_code == 200
+    fresh_client = app.test_client()
+    assert employee_login(fresh_client).status_code == 200
+    assert fresh_client.get("/api/employee/plan").get_json()["plan"]["holiday"] == holiday
+    admin = app.test_client()
+    assert admin_login(admin).status_code == 200
+    employee = next(row for row in admin.get("/api/admin/dashboard").get_json()["employees"] if row["id"] == 1)
+    assert employee["plan"]["holiday"] == holiday
+    csv = admin.get("/api/admin/export.csv").data.decode("utf-8-sig")
+    for work_date in dates:
+        assert work_date in csv
+    assert "Все праздничные смены" in csv
 
 
 def test_hr_stats_and_utf8_csv_reflect_saved_plan(app, client):

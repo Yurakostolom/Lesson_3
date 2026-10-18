@@ -22,7 +22,7 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 APP_ID = "medsonar-vacations-local-2027"
-LOCAL_VERSION = "1.0.1"
+LOCAL_VERSION = "1.0.2"
 
 
 def default_data_dir() -> Path:
