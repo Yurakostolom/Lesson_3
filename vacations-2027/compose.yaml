@@ -1,0 +1,15 @@
+services:
+  vacations:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATA_DIR: /var/data
+      ADMIN_LOGIN: ${ADMIN_LOGIN:-admin01}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin01}
+      COOKIE_SECURE: ${COOKIE_SECURE:-0}
+    volumes:
+      - vacations-data:/var/data
+    restart: unless-stopped
+volumes:
+  vacations-data:
