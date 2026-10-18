@@ -1,6 +1,6 @@
 # Отпуска сотрудников · 2027
 
-[Скачать программу для Windows 10/11, 64 бита](https://github.com/Yurakostolom/Lesson_3/raw/refs/heads/main/downloads/vacations-2027-windows-x64.zip)
+[Скачать программу для Windows 10/11, 64 бита](https://raw.githubusercontent.com/Yurakostolom/Lesson_3/main/downloads/vacations-2027-windows-x64.zip)
 
 После скачивания нажмите на ZIP правой кнопкой → **Извлечь всё**. В распакованной папке запустите **START.bat**. Программа откроется в браузере; окно запуска оставьте открытым. Python и библиотеки включены, подключение к интернету для работы не требуется.
 
