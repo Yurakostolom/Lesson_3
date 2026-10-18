@@ -462,7 +462,7 @@ def create_app(config=None):
         if not seed.exists():
             seed = Path(__file__).parent / "private" / "initial-roster.json"
         if app.config["SEED_ROSTER"] and seed.exists() and db.execute("SELECT count(*) FROM employees").fetchone()[0] == 0:
-            result = json.loads(seed.read_text())
+            result = json.loads(seed.read_text(encoding="utf-8-sig"))
             for employee in result["matched"]:
                 name = employee["full_name"]
                 surname = employee["surname"]

@@ -22,6 +22,7 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 APP_ID = "medsonar-vacations-local-2027"
+LOCAL_VERSION = "1.0.1"
 
 
 def default_data_dir() -> Path:
@@ -124,7 +125,7 @@ def main(argv=None) -> int:
     address = f"http://127.0.0.1:{port}"
     marker = data_dir / ".local-server.json"
     marker.write_text(json.dumps({"port": port, "pid": os.getpid()}), encoding="utf-8")
-    print("\nОтпуска сотрудников · 2027", flush=True)
+    print(f"\nОтпуска сотрудников · 2027 · версия {LOCAL_VERSION}", flush=True)
     print(f"Адрес программы: {address}", flush=True)
     print(f"Данные: {data_dir}", flush=True)
     print("Оставьте это окно открытым, пока работаете с программой.", flush=True)

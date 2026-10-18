@@ -1,6 +1,8 @@
 # Отпуска сотрудников · 2027
 
-[Открыть архив программы для Windows 10/11, 64 бита](https://github.com/Yurakostolom/Lesson_3/blob/main/downloads/vacations-2027-windows-x64.zip)
+[Открыть исправленную версию 1.0.1 для Windows 10/11, 64 бита](https://github.com/Yurakostolom/Lesson_3/blob/main/downloads/vacations-2027-windows-x64-v1.0.1.zip)
+
+В версии 1.0.1 исправлена ошибка `UnicodeDecodeError` при запуске на русской Windows (CP1251). Закройте старое окно программы, распакуйте новую версию в отдельную папку и запустите START.bat. Сохранённые данные в профиле Windows удалять не нужно.
 
 На странице архива нажмите **Download raw file** — значок стрелки вниз справа вверху. Открывайте её в том же браузере и аккаунте GitHub, где видны папки этого репозитория. Прямая ссылка на домен `raw.githubusercontent.com` может возвращать404; используйте страницу файла и кнопку скачивания GitHub.
 

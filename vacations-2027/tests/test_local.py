@@ -144,3 +144,65 @@ def test_server_reuse_status_identifies_its_own_data_directory(tmp_path):
     assert first_status["year"] == second_status["year"] == 2027
     assert first_status["data"] != second_status["data"]
     assert str(tmp_path) not in first.get_data(as_text=True)
+
+
+@pytest.mark.parametrize("seed_encoding", ["utf-8", "utf-8-sig"])
+@pytest.mark.parametrize("after_failed_startup", [False, True])
+def test_cyrillic_roster_starts_and_survives_restart_with_windows_code_page(
+    tmp_path, monkeypatch, seed_encoding, after_failed_startup
+):
+    import json
+
+    data_dir = tmp_path / "local-data"
+    data_dir.mkdir()
+    seed = data_dir / "initial-roster.json"
+    full_name = "Иванов Иван Игоревич"
+    seed.write_text(
+        json.dumps(
+            {"matched": [{"surname": "Иванов", "full_name": full_name}]},
+            ensure_ascii=False,
+        ),
+        encoding=seed_encoding,
+    )
+    # The UTF-8 bytes of И include 0x98, which is undefined in Windows-1251.
+    # Reproduce the reported first-launch failure even on a UTF-8 Linux host.
+    with pytest.raises(UnicodeDecodeError):
+        seed.read_bytes().decode("cp1251")
+
+    original_read_text = Path.read_text
+
+    if after_failed_startup:
+        def legacy_read_text(path, encoding=None, errors=None, **kwargs):
+            return original_read_text(
+                path, encoding="cp1251" if path == seed else encoding,
+                errors=errors, **kwargs
+            )
+
+        with monkeypatch.context() as legacy:
+            legacy.setattr(Path, "read_text", legacy_read_text)
+            with pytest.raises(UnicodeDecodeError):
+                create_local_app(data_dir)
+        database_before_retry = (data_dir / "vacations.sqlite3").stat()
+        session_key_before_retry = (data_dir / ".session-key").read_bytes()
+
+    def windows_read_text(path, encoding=None, errors=None, **kwargs):
+        if path == seed and encoding is None:
+            encoding = "cp1251"
+        return original_read_text(path, encoding=encoding, errors=errors, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", windows_read_text)
+
+    first_app = create_local_app(data_dir)
+    if after_failed_startup:
+        assert (data_dir / "vacations.sqlite3").stat().st_ino == database_before_retry.st_ino
+        assert (data_dir / ".session-key").read_bytes() == session_key_before_retry
+    employee = login_employee(first_app.test_client(), surname="Иванов")
+    assert employee["full_name"] == full_name
+
+    restarted_app = create_local_app(data_dir)
+    saved_employee = login_employee(restarted_app.test_client(), surname="Иванов")
+    assert saved_employee["id"] == employee["id"]
+    assert saved_employee["full_name"] == full_name
+    with restarted_app.app_context():
+        names = get_db().execute("SELECT full_name FROM employees").fetchall()
+    assert [row["full_name"] for row in names] == [full_name]
